@@ -48,3 +48,4 @@ label { color: #a6b3c1; font-size: 11px; } select { width: 100%; margin-top: 7px
 .device-icon::after { content: ""; position: absolute; bottom: 4px; left: 9px; width: 4px; height: 2px; border-radius: 50%; background: #b8f36b; }
 .sidebar-footer { padding-top: 16px; padding-bottom: 8px; color: #b8c4d0; }
 .entry-list { padding-bottom: 52px; margin-bottom: 18px; }
+.download-panel .download-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; }
