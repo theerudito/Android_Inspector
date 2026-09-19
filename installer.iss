@@ -14,7 +14,7 @@
 #endif
 
 [Setup]
-AppId={{9B44F321-729D-4F8F-B501-D3EBBF857C8A}
+AppId={{D87591BF-2D22-4EAA-BA14-FAA01EDCAE57}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -24,6 +24,7 @@ AppPublisher={#MyAppPublisher}
 
 ; Install in:
 ; Uses the architecture-appropriate Program Files directory.
+//DefaultDirName={autopf}\{#MyAppPublisher}\Android Inspector
 DefaultDirName={commonpf32}\{#MyAppPublisher}\Android Inspector
 
 DefaultGroupName={#MyAppName}
