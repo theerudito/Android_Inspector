@@ -327,6 +327,23 @@ func parseMdnsServices(output string) []mdnsService {
 	return services
 }
 
+func mdnsInstanceName(name string) string {
+	name = strings.TrimSuffix(strings.TrimSpace(name), ".")
+	if i := strings.Index(name, "."); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
+func findNamedMdnsService(services []mdnsService, kind, instance string) (mdnsService, bool) {
+	for _, service := range services {
+		if service.Kind == kind && mdnsInstanceName(service.Name) == instance {
+			return service, true
+		}
+	}
+	return mdnsService{}, false
+}
+
 func (c *ADBClient) restartADBServer(ctx context.Context, enableMDNS bool) error {
 	name, err := c.commandName()
 	if err != nil {
@@ -337,7 +354,9 @@ func (c *ADBClient) restartADBServer(ctx context.Context, enableMDNS bool) error
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, name, "start-server")
 	configureCommand(cmd)
-	if !enableMDNS {
+	if enableMDNS {
+		cmd.Env = append(os.Environ(), "ADB_MDNS_OPENSCREEN=1")
+	} else {
 		cmd.Env = append(os.Environ(), "ADB_MDNS=0", "ADB_MDNS_OPENSCREEN=0")
 	}
 	out, err := cmd.CombinedOutput()
@@ -367,6 +386,32 @@ func (c *ADBClient) Connect(ctx context.Context, address string) error {
 	lower := strings.ToLower(msg)
 	if strings.Contains(lower, "failed") || strings.Contains(lower, "unable") || strings.Contains(lower, "cannot") {
 		return fmt.Errorf("connect %s: %s", address, msg)
+	}
+	return nil
+}
+
+func (c *ADBClient) Pair(ctx context.Context, address, password string) error {
+	address = strings.TrimSpace(address)
+	password = strings.TrimSpace(password)
+	if address == "" || !serialPattern.MatchString(address) {
+		return fmt.Errorf("a valid host:port is required")
+	}
+	if password == "" {
+		return fmt.Errorf("pairing password is required")
+	}
+	out, err := c.runADB(ctx, "pair", address, password)
+	msg := strings.TrimSpace(string(out))
+	if err != nil {
+		if msg != "" {
+			return fmt.Errorf("pair %s: %w: %s", address, err, msg)
+		}
+		return fmt.Errorf("pair %s: %w", address, err)
+	}
+	if !strings.Contains(strings.ToLower(msg), "successfully paired") {
+		if msg == "" {
+			return fmt.Errorf("pair %s: pairing was not accepted", address)
+		}
+		return fmt.Errorf("pair %s: %s", address, msg)
 	}
 	return nil
 }
@@ -477,7 +522,7 @@ func (s *wifiPairingSession) snapshot() WifiPairingStatus {
 	return s.status
 }
 
-// StartWifiPairing advertises a host pairing service and returns a scannable QR offer.
+// StartWifiPairing returns a scannable QR offer and waits for the phone to advertise pairing.
 func (a *App) StartWifiPairing() (WifiPairingOffer, error) {
 	if _, err := a.client.commandName(); err != nil {
 		return WifiPairingOffer{}, err
@@ -485,10 +530,10 @@ func (a *App) StartWifiPairing() (WifiPairingOffer, error) {
 	if err := a.client.StartServer(a.ctx); err != nil {
 		return WifiPairingOffer{}, err
 	}
-	_ = a.client.restartADBServer(a.ctx, false)
-	pubKey, err := loadHostADBPublicKey()
-	if err != nil {
-		return WifiPairingOffer{}, err
+	if _, err := a.client.MdnsServices(a.ctx); err != nil {
+		if err := a.client.restartADBServer(a.ctx, true); err != nil {
+			return WifiPairingOffer{}, fmt.Errorf("enable ADB mDNS discovery: %w", err)
+		}
 	}
 	serviceName, password, payload, err := generateWifiPairingIdentity()
 	if err != nil {
@@ -498,27 +543,11 @@ func (a *App) StartWifiPairing() (WifiPairingOffer, error) {
 	if err != nil {
 		return WifiPairingOffer{}, fmt.Errorf("encode pairing QR: %w", err)
 	}
-	cert, err := generatePairingCertificate()
+	ip, _, err := preferredLANIPv4()
 	if err != nil {
-		return WifiPairingOffer{}, fmt.Errorf("create pairing certificate: %w", err)
+		ip = ""
 	}
-	ip, iface, err := preferredLANIPv4()
-	if err != nil {
-		return WifiPairingOffer{}, err
-	}
-	listener, err := net.Listen("tcp4", "0.0.0.0:0")
-	if err != nil {
-		return WifiPairingOffer{}, fmt.Errorf("listen for pairing connections: %w", err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
 	ctx, cancel := context.WithTimeout(a.ctx, wifiPairingTimeout)
-	stopMDNS, err := startPairingMDNS(ctx, iface, net.ParseIP(ip), serviceName, port)
-	if err != nil {
-		cancel()
-		_ = listener.Close()
-		return WifiPairingOffer{}, fmt.Errorf("advertise pairing service: %w", err)
-	}
-
 	session := &wifiPairingSession{cancel: cancel}
 	session.setStatus("waiting", "Scan the QR code from Wireless debugging on the phone.", "")
 
@@ -529,7 +558,7 @@ func (a *App) StartWifiPairing() (WifiPairingOffer, error) {
 	a.pairing = session
 	a.pairingMu.Unlock()
 
-	go a.runWifiPairing(ctx, session, listener, stopMDNS, []byte(password), cert, packPeerInfo(pubKey))
+	go a.runWifiPairing(ctx, session, serviceName, password)
 	return WifiPairingOffer{
 		ServiceName: serviceName,
 		Password:    password,
@@ -561,40 +590,46 @@ func (a *App) StopWifiPairing() {
 	}
 }
 
-func (a *App) runWifiPairing(ctx context.Context, session *wifiPairingSession, listener net.Listener, stopMDNS func(), password []byte, cert tls.Certificate, peerInfo []byte) {
-	defer stopMDNS()
-	defer listener.Close()
-	go func() {
-		<-ctx.Done()
-		_ = listener.Close()
-	}()
-
-	conn, err := listener.Accept()
-	if err != nil {
+func (a *App) runWifiPairing(ctx context.Context, session *wifiPairingSession, serviceName, password string) {
+	var lastErr error
+	for {
 		if ctx.Err() != nil {
+			if lastErr != nil {
+				session.setStatus("failed", "Waiting for the phone timed out. Keep Wireless debugging on and scan again.", "")
+				return
+			}
 			session.setStatus("stopped", "Wi-Fi pairing closed.", "")
 			return
 		}
-		session.setStatus("failed", "Waiting for the phone timed out or was blocked by the firewall.", "")
-		return
+		services, err := a.client.MdnsServices(ctx)
+		if err != nil {
+			lastErr = err
+		} else if service, ok := findNamedMdnsService(services, "pairing", serviceName); ok {
+			session.setStatus("pairing", "Phone found. Completing secure pairing…", "")
+			if err := a.client.Pair(ctx, service.Address, password); err != nil {
+				lastErr = err
+			} else {
+				session.setStatus("connecting", "Paired. Connecting over Wi-Fi…", "")
+				serial, err := a.connectPairedDevice(ctx, connHost(service.Address))
+				if err != nil {
+					session.setStatus("failed", "Paired, but ADB could not connect yet. Keep Wireless debugging on and refresh devices.", "")
+					return
+				}
+				session.setStatus("connected", "Connected over Wi-Fi.", serial)
+				return
+			}
+		}
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				session.setStatus("failed", "Waiting for the phone timed out. Keep Wireless debugging on and scan again.", "")
+				return
+			}
+			session.setStatus("stopped", "Wi-Fi pairing closed.", "")
+			return
+		case <-time.After(800 * time.Millisecond):
+		}
 	}
-	defer conn.Close()
-	session.setStatus("pairing", "Phone found. Completing secure pairing…", "")
-	if err := runPairingHandshake(conn, password, cert, peerInfo); err != nil {
-		session.setStatus("failed", "Pairing handshake failed. Scan again from the phone.", "")
-		return
-	}
-
-	stopMDNS()
-	_ = a.client.restartADBServer(ctx, true)
-	remoteIP := connHost(conn.RemoteAddr().String())
-	session.setStatus("connecting", "Paired. Connecting over Wi-Fi…", "")
-	serial, err := a.connectPairedDevice(ctx, remoteIP)
-	if err != nil {
-		session.setStatus("failed", "Paired, but ADB could not connect yet. Keep Wireless debugging on and refresh devices.", "")
-		return
-	}
-	session.setStatus("connected", "Connected over Wi-Fi.", serial)
 }
 
 func connHost(address string) string {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"strings"
 	"testing"
@@ -236,6 +237,54 @@ func TestParseMdnsServices(t *testing.T) {
 	}
 	if got[1].Kind != "pairing" || got[1].Address != "192.168.1.8:37199" {
 		t.Fatalf("pairing = %#v", got[1])
+	}
+}
+
+func TestMdnsInstanceName(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"insp-47ccc14c._adb-tls-pairing._tcp", "insp-47ccc14c"},
+		{"studio-gEyOIY6ovq._adb-tls-pairing._tcp.", "studio-gEyOIY6ovq"},
+		{"adb-XYZ._adb-tls-connect._tcp", "adb-XYZ"},
+	}
+	for _, tt := range tests {
+		if got := mdnsInstanceName(tt.name); got != tt.want {
+			t.Fatalf("mdnsInstanceName(%q) = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestFindNamedMdnsServiceMatchesQRInstance(t *testing.T) {
+	services := parseMdnsServices("List of discovered mdns services\nadb-XYZ._adb-tls-connect._tcp\t192.168.1.8:40367\ninsp-47ccc14c._adb-tls-pairing._tcp\t192.168.1.9:37199\n")
+	got, ok := findNamedMdnsService(services, "pairing", "insp-47ccc14c")
+	if !ok || got.Address != "192.168.1.9:37199" {
+		t.Fatalf("got=%#v ok=%v", got, ok)
+	}
+	if _, ok := findNamedMdnsService(services, "pairing", "studio-gEyOIY6ovq"); ok {
+		t.Fatal("matched a different QR instance")
+	}
+}
+
+func TestPairAcceptsSuccessfulResponse(t *testing.T) {
+	client := &ADBClient{run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) != 3 || args[0] != "pair" || args[1] != "192.168.1.9:37199" || args[2] != "GRtUBuwh" {
+			t.Fatalf("args=%v", args)
+		}
+		return []byte("Successfully paired to 192.168.1.9:37199 [guid=adb-xxx]\n"), nil
+	}}
+	if err := client.Pair(context.Background(), "192.168.1.9:37199", "GRtUBuwh"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPairRejectsFailedResponse(t *testing.T) {
+	client := &ADBClient{run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("Failed to pair with 192.168.1.9:37199\n"), nil
+	}}
+	if err := client.Pair(context.Background(), "192.168.1.9:37199", "secret"); err == nil {
+		t.Fatal("expected error")
 	}
 }
 
