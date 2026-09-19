@@ -10,6 +10,10 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .sidebar { width: 286px; min-height: 0; flex: none; padding: 27px 20px; background: #101923; border-right: 1px solid #253544; display: flex; flex-direction: column; gap: 20px; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
 .sidebar::-webkit-scrollbar { display: none; }
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 2px 20px; border-bottom: 1px solid #253544; }
+.brand > div:nth-child(2) { min-width: 0; flex: 1; }
+.wifi-qr-button { display: grid; place-items: center; width: 32px; height: 32px; flex: none; margin-left: auto; border: 1px solid #354858; border-radius: 8px; background: #192632; color: #b8f36b; }
+.wifi-qr-button:hover:not(:disabled) { border-color: #b8f36b; background: #1e2e38; }
+.wifi-qr-icon { width: 16px; height: 16px; fill: currentColor; }
 .brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: #b8f36b; color: #14200e; font-size: 13px; font-weight: 900; }
 .brand strong, .brand span, .device-card strong, .device-card span { display: block; }
 .brand strong { font-size: 13px; } .brand span { margin-top: 4px; color: #718094; font-size: 10px; }
@@ -40,6 +44,14 @@ label { color: #a6b3c1; font-size: 11px; } select { width: 100%; margin-top: 7px
 .pdf-preview { display: grid; min-height: 210px; place-items: center; margin-top: 18px; color: #8291a2; font-size: 10px; } .pdf-preview canvas { max-width: 100%; height: auto; border: 1px solid #2a3b4a; border-radius: 6px; box-shadow: 0 10px 24px #05090d66; } .preview-meta { margin-top: 10px; color: #8191a3; font-family: ui-monospace, monospace; font-size: 10px; text-align: center; } .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .download-panel { display: flex; flex-direction: column; gap: 9px; margin-top: 24px; padding: 18px; border: 1px solid #2a3b4a; border-radius: 9px; background: #131f2a; color: #aab8c7; font-size: 11px; } .download-panel strong { color: #e8eef7; font-size: 13px; } .download-panel span { color: #8191a3; font-family: ui-monospace, monospace; font-size: 10px; } .download-panel p { margin: 4px 0 8px; line-height: 1.5; }
 .dialog-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; background: #05090dcc; } .confirm-dialog { width: 360px; padding: 22px; border: 1px solid #3a4c5c; border-radius: 11px; background: #131f2a; box-shadow: 0 20px 60px #0009; } .confirm-dialog h2 { margin: 0 0 10px; color: #f3f7fb; font-size: 17px; } .confirm-dialog p { margin: 0; color: #a6b4c2; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; } .confirm-dialog p strong { color: #ffd1c7; } .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.wifi-dialog { width: 420px; max-width: calc(100vw - 48px); padding: 22px; border: 1px solid #3a4c5c; border-radius: 11px; background: #131f2a; box-shadow: 0 20px 60px #0009; }
+.wifi-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.wifi-dialog h2 { margin: 0; color: #f3f7fb; font-size: 17px; }
+.wifi-dialog p { margin: 0; color: #a6b4c2; font-size: 12px; line-height: 1.6; }
+.wifi-close { padding: 6px 10px; border: 1px solid #354858; border-radius: 7px; background: #192632; color: #c4d0dc; font-size: 11px; font-weight: 700; }
+.wifi-qr-stage { display: grid; place-items: center; min-height: 248px; margin: 18px 0 10px; padding: 18px; border: 1px solid #2a3b4a; border-radius: 10px; background: #fff; }
+.wifi-qr-stage img { width: 220px; height: 220px; image-rendering: pixelated; background: #fff; }
+.wifi-host { margin: 0 0 10px; color: #c4d0dc !important; font-family: ui-monospace, monospace; font-size: 12px; text-align: center; }
 .error-text, .notice-text { margin: 0; font-size: 11px; } .error-text { color: #f2a56d; } .notice-text { color: #b8f36b; } .workspace-message { margin-top: 10px; }
 @media (max-width: 900px) { .sidebar { width: 250px; } .workspace { padding: 22px; } .preview-pane { min-width: 210px; } }
 /* Final visual refinements */

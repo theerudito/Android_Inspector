@@ -90,6 +90,42 @@ export namespace main {
 	        this.lineCount = source["lineCount"];
 	    }
 	}
+	export class WifiPairingOffer {
+	    serviceName: string;
+	    password: string;
+	    qrPayload: string;
+	    qrImage: string;
+	    host: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WifiPairingOffer(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.serviceName = source["serviceName"];
+	        this.password = source["password"];
+	        this.qrPayload = source["qrPayload"];
+	        this.qrImage = source["qrImage"];
+	        this.host = source["host"];
+	    }
+	}
+	export class WifiPairingStatus {
+	    state: string;
+	    message: string;
+	    serial?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WifiPairingStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.message = source["message"];
+	        this.serial = source["serial"];
+	    }
+	}
 
 }
 

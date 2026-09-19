@@ -10,7 +10,10 @@ import {
   ListPackageDirectory,
   PreviewFile,
   SaveFile,
+  StartWifiPairing,
+  StopWifiPairing,
   UploadFile,
+  WifiPairingStatus,
 } from "../wailsjs/go/main/App";
 import type { main } from "../wailsjs/go/models";
 
@@ -19,6 +22,8 @@ type Device = main.Device;
 type DirectoryEntry = main.DirectoryEntry;
 type DebugPackage = main.DebugPackage;
 type FilePreview = main.FilePreview;
+type WifiPairingOffer = main.WifiPairingOffer;
+type WifiStatus = main.WifiPairingStatus;
 
 function Progress({ label }: { label: string }) {
   return (
@@ -35,6 +40,13 @@ function FileIcon({ directory }: { directory: boolean }) {
     <span className={directory ? "file-icon folder-icon" : "file-icon"}>
       {directory ? "▰" : "□"}
     </span>
+  );
+}
+function QrIcon() {
+  return (
+    <svg className="wifi-qr-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 4h2v2h-2v-2zm4-4h2v2h-2v-2zm-4 0h2v2h-2v-2zm4 4h2v2h-2v-2z" />
+    </svg>
   );
 }
 function ToolbarIcon({ type }: { type: "upload" | "download" | "delete" }) {
@@ -131,10 +143,14 @@ function App() {
   const [notice, setNotice] = useState("");
   const [packagesError, setPackagesError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<DirectoryEntry | null>(null);
+  const [wifiOpen, setWifiOpen] = useState(false);
+  const [wifiOffer, setWifiOffer] = useState<WifiPairingOffer | null>(null);
+  const [wifiStatus, setWifiStatus] = useState<WifiStatus | null>(null);
   const [mediaURL, setMediaURL] = useState("");
   const [pdfError, setPdfError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const loadRequest = useRef(0);
+  const wifiConnected = useRef(false);
   const selectedDevice = useMemo(
     () => devices.find((item) => item.serial === serial),
     [devices, serial],
@@ -167,6 +183,46 @@ function App() {
     });
     return () => URL.revokeObjectURL(url);
   }, [preview]);
+  async function openWifiPairing() {
+    wifiConnected.current = false;
+    setWifiOpen(true);
+    setWifiOffer(null);
+    setWifiStatus({ state: "waiting", message: "Preparing Wi-Fi pairing…" });
+    try {
+      setWifiOffer(await StartWifiPairing());
+    } catch (e) {
+      setWifiStatus({ state: "failed", message: String(e) });
+    }
+  }
+  function closeWifiPairing() {
+    setWifiOpen(false);
+    setWifiOffer(null);
+    setWifiStatus(null);
+    void StopWifiPairing();
+  }
+  useEffect(() => {
+    if (!wifiOpen || !wifiOffer) return;
+    let cancelled = false;
+    async function poll() {
+      try {
+        const status = await WifiPairingStatus();
+        if (cancelled) return;
+        setWifiStatus(status);
+        if (status.state === "connected" && !wifiConnected.current) {
+          wifiConnected.current = true;
+          refreshDevices();
+        }
+      } catch {
+        /* keep the last status while the modal is open */
+      }
+    }
+    poll();
+    const timer = window.setInterval(poll, 800);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [wifiOpen, wifiOffer]);
   async function refreshDevices() {
     setBusy("devices");
     setError("");
@@ -364,6 +420,15 @@ function App() {
             <strong>Android Inspector</strong>
             <span>Sandbox file manager</span>
           </div>
+          <button
+            className="wifi-qr-button"
+            onClick={openWifiPairing}
+            disabled={!adbReady}
+            title="Pair device over Wi-Fi"
+            aria-label="Pair device over Wi-Fi"
+          >
+            <QrIcon />
+          </button>
         </div>
         <div className="sidebar-section connection-card">
           <div className="section-heading">
@@ -617,6 +682,47 @@ function App() {
             </div>
           </div>
         </section>
+        {wifiOpen && (
+          <div className="dialog-backdrop" role="presentation">
+            <div
+              className="wifi-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="wifi-title"
+            >
+              <div className="wifi-dialog-header">
+                <h2 id="wifi-title">Pair devices over Wi-Fi</h2>
+                <button className="wifi-close" onClick={closeWifiPairing}>
+                  Close
+                </button>
+              </div>
+              <p>
+                Pair an Android 11+ device for wireless debugging. On the phone
+                open Developer options &gt; Wireless debugging &gt; Pair using
+                QR code, then scan this code.
+              </p>
+              <div className="wifi-qr-stage">
+                {wifiOffer?.qrImage ? (
+                  <img src={wifiOffer.qrImage} alt="Wi-Fi pairing QR code" />
+                ) : (
+                  <Progress label="Generating QR code" />
+                )}
+              </div>
+              {wifiOffer?.host && <p className="wifi-host">{wifiOffer.host}</p>}
+              {wifiStatus?.message && (
+                <p
+                  className={
+                    wifiStatus.state === "failed"
+                      ? "error-text"
+                      : "notice-text"
+                  }
+                >
+                  {wifiStatus.message}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
         {deleteTarget && (
           <div className="dialog-backdrop" role="presentation">
             <div

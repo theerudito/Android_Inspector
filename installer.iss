@@ -78,3 +78,56 @@ Filename: "{app}\{#MyAppExeName}"; \
     Description: "Launch {#MyAppName}"; \
     WorkingDir: "{app}"; \
     Flags: nowait postinstall skipifsilent
+
+[Code]
+const
+  FirewallTcpRule = 'Android Inspector Wi-Fi pairing (TCP)';
+  FirewallUdpRule = 'Android Inspector Wi-Fi pairing (UDP)';
+  FirewallMdnsRule = 'Android Inspector mDNS (UDP 5353)';
+
+function RunNetsh(const Params: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\netsh.exe'), Params, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+procedure DeleteFirewallRules;
+begin
+  RunNetsh('advfirewall firewall delete rule name="' + FirewallTcpRule + '"');
+  RunNetsh('advfirewall firewall delete rule name="' + FirewallUdpRule + '"');
+  RunNetsh('advfirewall firewall delete rule name="' + FirewallMdnsRule + '"');
+end;
+
+procedure AddFirewallRules;
+var
+  AppPath: String;
+begin
+  AppPath := ExpandConstant('{app}\{#MyAppExeName}');
+  DeleteFirewallRules;
+  RunNetsh('advfirewall firewall add rule name="' + FirewallTcpRule +
+    '" dir=in action=allow program="' + AppPath +
+    '" enable=yes profile=any protocol=tcp');
+  RunNetsh('advfirewall firewall add rule name="' + FirewallUdpRule +
+    '" dir=in action=allow program="' + AppPath +
+    '" enable=yes profile=any protocol=udp');
+  RunNetsh('advfirewall firewall add rule name="' + FirewallMdnsRule +
+    '" dir=in action=allow protocol=udp localport=5353 enable=yes profile=any');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    WizardForm.StatusLabel.Caption :=
+      'Allowing Wi-Fi pairing through Windows Firewall...';
+    AddFirewallRules;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    DeleteFirewallRules;
+end;

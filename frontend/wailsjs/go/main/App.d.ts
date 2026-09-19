@@ -20,4 +20,10 @@ export function ReadFile(arg1:string,arg2:string,arg3:string):Promise<main.FileC
 
 export function SaveFile(arg1:string,arg2:string,arg3:string):Promise<string>;
 
+export function StartWifiPairing():Promise<main.WifiPairingOffer>;
+
+export function StopWifiPairing():Promise<void>;
+
 export function UploadFile(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<void>;
+
+export function WifiPairingStatus():Promise<main.WifiPairingStatus>;

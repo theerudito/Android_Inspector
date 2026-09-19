@@ -38,6 +38,18 @@ export function SaveFile(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveFile'](arg1, arg2, arg3);
 }
 
+export function StartWifiPairing() {
+  return window['go']['main']['App']['StartWifiPairing']();
+}
+
+export function StopWifiPairing() {
+  return window['go']['main']['App']['StopWifiPairing']();
+}
+
 export function UploadFile(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['UploadFile'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function WifiPairingStatus() {
+  return window['go']['main']['App']['WifiPairingStatus']();
 }

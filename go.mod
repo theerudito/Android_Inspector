@@ -2,7 +2,14 @@ module android_inspector
 
 go 1.25.0
 
-require github.com/wailsapp/wails/v2 v2.16.0
+require (
+	filippo.io/edwards25519 v1.1.1
+	github.com/miekg/dns v1.1.27
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+	github.com/wailsapp/wails/v2 v2.16.0
+	golang.org/x/net v0.56.0
+	golang.org/x/sys v0.46.0
+)
 
 require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
@@ -30,7 +37,5 @@ require (
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
-	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
 )

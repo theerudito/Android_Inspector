@@ -17,6 +17,8 @@ type App struct {
 	ctx         context.Context
 	client      *ADBClient
 	startupOnce sync.Once
+	pairingMu   sync.Mutex
+	pairing     *wifiPairingSession
 }
 
 // NewApp creates a new App application struct
