@@ -1,161 +1,174 @@
 # Android Inspector
 
-Android Inspector is a desktop application for inspecting the private sandbox of debuggable Android applications through ADB. It uses Go and Wails with a React frontend and keeps the native window fixed at 1280x760.
+Android Inspector is a [Wails](https://wails.io/) desktop application for inspecting and interacting with Android devices through ADB.
 
-## Features
+## Supported platforms
 
-- Discovers connected Android devices through ADB.
-- Finds third-party packages that accept `run-as`, which identifies debuggable apps available for inspection.
-- Browses files and directories inside an application's sandbox.
-- Previews text files, supported images, and PDF documents.
-- Downloads and uploads files without treating binary data as text. Transfers are limited to 64 MiB per file.
-- Confirms file and directory deletion before issuing the operation.
-- Hides ADB console windows on Windows.
-- Shows the complete native local path after a successful download.
-- Uses a fixed, non-resizable 1280x760 window.
+- Windows
+- Linux
+- macOS
 
 ## Prerequisites
 
-Install the tools for your operating system before building:
+Install these tools before building:
 
-| Platform | Required software |
-| --- | --- |
-| Windows | Go, Node.js/npm, Wails CLI, Android SDK Platform-Tools (`adb`), and Microsoft WebView2 Runtime. Inno Setup is also required to build the installer. |
-| Ubuntu/Linux | Go, Node.js/npm, Wails CLI, Android SDK Platform-Tools (`adb`), and the WebKit2GTK development packages required by Wails. On Ubuntu, install `libgtk-3-dev`, `libwebkit2gtk-4.0-dev` (or the package version required by your Ubuntu release), `pkg-config`, and `build-essential`. |
-| macOS | Go, Node.js/npm, Wails CLI, Android SDK Platform-Tools (`adb`), and Xcode Command Line Tools (`xcode-select --install`). |
+- Go 1.25 or newer
+- Node.js and npm
+- Wails CLI v2.16.0
+- Android SDK Platform-Tools (for ADB at runtime)
 
-Install the Wails CLI with the version used by this project:
+Install the Wails CLI at the version used by this repository. This step is required before compiling on Linux, Windows, or macOS:
 
-```sh
+```bash
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
 ```
 
-Make sure the Go and Wails binary directories are on `PATH` (`%USERPROFILE%\go\bin` on Windows and `$(go env GOPATH)/bin` on Unix-like systems).
+Ensure `$(go env GOPATH)/bin` is on `PATH` (use `%USERPROFILE%\go\bin` on Windows).
 
-## ADB Resolution
+Platform-specific prerequisites:
 
-Android Inspector resolves ADB in this order:
+| Platform | Additional prerequisites |
+| --- | --- |
+| Windows | Microsoft WebView2 Runtime, a MinGW-w64 C toolchain, Android Platform-Tools, and the USB driver for the device |
+| Linux | GTK 3, WebKitGTK, `pkg-config`, a C compiler, and `adb`; see [Linux dependencies](#linux-dependencies) |
+| macOS | Xcode Command Line Tools (`xcode-select --install`) and Android Platform-Tools |
 
-1. `ADB_PATH`, when it points to an existing executable.
-2. `ANDROID_HOME/platform-tools/adb`.
-3. `ANDROID_SDK_ROOT/platform-tools/adb`.
-4. The standard SDK location for the operating system:
-   - Windows: `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`, then `%USERPROFILE%\AppData\Android\Sdk\platform-tools\adb.exe`.
-   - Ubuntu/Linux: `$HOME/Android/Sdk/platform-tools/adb`.
-   - macOS: `$HOME/Library/Android/sdk/platform-tools/adb`.
-5. `adb` or `adb.exe` on `PATH`.
+Verify the command-line tools:
 
-Verify the installation and device connection from a terminal:
-
-```sh
+```bash
+go version
+node --version
+wails version
 adb version
-adb devices -l
 ```
 
-Enable USB debugging on the device and accept its authorization prompt. A device should appear with state `device`, not `unauthorized` or `offline`.
+## Linux dependencies
 
-## Setup
+Wails v2 uses GTK 3 and WebKitGTK. The Debian builder in this repository uses the WebKitGTK 4.1 Wails tag. On Ubuntu/Debian systems, install these dependencies:
 
-Clone or enter the repository, then install frontend dependencies:
-
-```sh
-cd android_inspector
-cd frontend
-npm install
-cd ..
+```bash
+sudo apt update
+sudo apt install adb build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
 ```
 
-For a development run with hot reload:
+If your distribution only provides WebKitGTK 4.0, install `libwebkit2gtk-4.0-dev` instead and use a direct Wails build without the `webkit2_41` tag. The packaged script is currently configured for WebKitGTK 4.1.
 
-```sh
+The `webkit2_41` tag is required because Wails selects the `webkit2gtk-4.1` and `libsoup-3.0` pkg-config dependencies only when that tag is enabled. Without the tag, Wails expects WebKitGTK 4.0.
+
+Check which development package is available:
+
+```bash
+pkg-config --modversion webkit2gtk-4.0
+pkg-config --modversion webkit2gtk-4.1
+```
+
+## Install frontend dependencies
+
+Run this from the repository root. `npm ci` uses `frontend/package-lock.json` and is reproducible; do not replace it with `npm install` for a clean build.
+
+```bash
+npm --prefix frontend ci
+```
+
+## Development
+
+Start the Wails development application from the repository root:
+
+```bash
 wails dev
 ```
 
-## Builds
+## Native builds
 
-Wails builds the native application for the host OS. Native desktop targets should be built on their respective operating systems because the WebView and platform toolchain are not reliably cross-compiled from another OS.
+Build on the operating system for which the application is intended. Wails uses the native platform WebView and this repository does not define a supported cross-compilation workflow.
 
 ### Windows
 
-Run PowerShell or Command Prompt from the repository root:
+Install Microsoft WebView2 Runtime and [Inno Setup](https://jrsoftware.org/isinfo.php). From PowerShell at the repository root:
 
 ```powershell
-npm --prefix frontend run build
-go test -count=1 ./...
-wails build -platform windows/amd64
+npm --prefix frontend ci
+wails build
 ```
 
-The Windows executable is written to `build\bin\android_inspector.exe`. To build the installer, install Inno Setup and run its compiler against the root script:
+Output: `build\bin\android_inspector.exe`.
+
+Build the Windows installer with Inno Setup:
 
 ```powershell
 ISCC.exe installer.iss
 ```
 
-The script checks for `build\bin\android_inspector.exe` and `build\windows\icon.ico` before compiling. The installer is written to `build\installer\AndroidInspector-Setup-1.0.0.exe`.
+Output: `build\installer\AndroidInspector-Setup-1.0.0.exe`.
 
-### Ubuntu/Linux
+### Linux
 
-Run from the repository root on Linux:
+From the repository root on Ubuntu/Debian:
 
-```sh
-npm --prefix frontend run build
-go test -count=1 ./...
-wails build -platform linux/amd64
+```bash
+npm --prefix frontend ci
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+chmod +x build/linux/build-deb.sh
+./build/linux/build-deb.sh
 ```
 
-The Linux release output is under `build/bin/`, including `build/bin/android_inspector` (the exact packaging files can vary by Wails version and Linux target).
+The script builds with the `webkit2_41` tag and creates `build/bin/android_inspector`.
+
+Review the generated package and install it:
+
+```bash
+ls -lah build/installer/
+sudo apt -f install
+sudo dpkg -i "build/installer/android-inspector_1.0.0_amd64.deb"
+```
+
+The package is written to `build/installer/`. If `dpkg` still reports missing dependencies, run `sudo apt -f install` again and repeat the installation command.
 
 ### macOS
 
-Run from the repository root on macOS:
+Install Xcode Command Line Tools and Android Platform-Tools, then build from Terminal at the repository root:
 
-```sh
-npm --prefix frontend run build
-go test -count=1 ./...
-wails build -platform darwin/universal
+```bash
+xcode-select --install
+brew install android-platform-tools
+npm --prefix frontend ci
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+wails build
 ```
 
-The macOS application is written under `build/bin/`, normally as `build/bin/android_inspector.app`.
+Output: `build/bin/android_inspector.app`.
 
-For the normal native build on any supported host, `wails build` is sufficient. The frontend build output is embedded into the native binary; do not distribute `frontend/dist` as a substitute for the native application.
+To distribute the macOS application, archive or sign the generated `.app` bundle according to the target macOS version and architecture. This repository does not include a macOS installer package.
 
-## Usage
+## ADB runtime requirement
 
-1. Start Android Inspector and click the device discovery action.
-2. Select a connected device in the device list.
-3. Select a debuggable package discovered through `run-as`.
-4. Browse the package sandbox, select a file, and preview supported content.
-5. Use download, upload, or delete. Downloads use the native save dialog and report the complete selected local path.
+ADB is not needed to compile the desktop application. It is required when running Android Inspector and communicating with a device. Install Android SDK Platform-Tools, enable USB debugging, connect the device, and verify the connection:
 
-## Limitations and Security
+```bash
+adb devices
+```
 
-- Only packages for which ADB `run-as` succeeds can be inspected. Release builds normally disable this access.
-- The application does not root the device and cannot bypass Android sandbox permissions.
-- ADB commands are sent to the selected device and package. Review the package, path, upload contents, and delete confirmation before performing destructive operations.
-- Uploads and downloads are limited to 64 MiB per file. Large files must be handled with another tool.
-- Preview support is limited to recognized text extensions, valid browser-compatible images, and PDFs. Unsupported or invalid binary files can still be transferred.
-- Device access depends on USB debugging, device authorization, the ADB server, and platform-tools compatibility.
+The application resolves ADB in this order:
+
+1. `ADB_PATH`, when it points to an executable.
+2. `ANDROID_HOME/platform-tools/adb`.
+3. `ANDROID_SDK_ROOT/platform-tools/adb`.
+4. The standard SDK location for the operating system.
+5. `adb` or `adb.exe` on `PATH`.
+
+A device must have status `device`; `unauthorized` and `offline` devices are not ready for inspection. Only debuggable packages that support `run-as` can be inspected.
+
+## Output locations
+
+Wails embeds the frontend into the native application. The distributable application is under `build/bin/`; `frontend/dist/` is only an intermediate frontend build output and is not a replacement for the native application.
 
 ## Troubleshooting
 
-### No ADB executable found
+- If ADB is not found, install Platform-Tools and configure `ADB_PATH`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, or `PATH`, then restart the application.
+- If a device is unauthorized, accept the USB debugging authorization prompt on the device.
+- If no packages are listed, confirm that the package is a debuggable build and that `adb -s DEVICE_SERIAL shell run-as PACKAGE_NAME id` succeeds.
+- If a Linux build cannot find WebKitGTK, install the matching development package and use `-tags webkit2_41` for WebKitGTK 4.1.
 
-Run `adb version`. If the command is unavailable, install Android SDK Platform-Tools and either set `ADB_PATH`, set `ANDROID_HOME` or `ANDROID_SDK_ROOT`, or add the SDK `platform-tools` directory to `PATH`. Restart Android Inspector after changing environment variables.
+## License
 
-### The device is missing or unauthorized
-
-Run `adb kill-server`, then `adb start-server` and `adb devices -l`. Reconnect the device, enable USB debugging, and accept the authorization dialog. Use a working USB cable and the appropriate platform driver on Windows.
-
-### No debuggable packages are listed
-
-The package must be installed as a debuggable build and must allow `run-as`. Test the selected device directly:
-
-```sh
-adb -s DEVICE_SERIAL shell run-as PACKAGE_NAME id
-```
-
-If this command fails, Android Inspector cannot browse that package. Confirm the package name, device state, and that the application is not a release build with `debuggable=false`.
-
-### Wails build fails
-
-Confirm that Go, Node/npm, Wails, and the platform WebView prerequisites are installed. On Linux, install the WebKit2GTK and GTK development packages; on macOS, install Xcode Command Line Tools; on Windows, install or repair WebView2 Runtime. Build the native target on its matching operating system.
+This project is licensed under the MIT License.

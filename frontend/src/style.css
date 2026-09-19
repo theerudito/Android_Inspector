@@ -19,7 +19,7 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .section-heading { display: flex; justify-content: space-between; align-items: center; color: #9eacbc; font-size: 10px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
 .section-heading b { color: #a9e86a; font-size: 10px; letter-spacing: normal; text-transform: none; } .offline { color: #f2a56d !important; }
 .count { min-width: 22px; padding: 3px 6px; border-radius: 10px; background: #21303d; color: #a4b3c3; text-align: center; }
-label { color: #a6b3c1; font-size: 11px; } select { width: 100%; margin-top: 7px; padding: 10px 11px; border: 1px solid #344757; border-radius: 7px; outline: none; background: #0c141d; color: #e8eef7; font-size: 12px; }
+label { color: #a6b3c1; font-size: 11px; } select { width: 100%; margin-top: 7px; padding: 10px 11px; border: 1px solid #344757; border-radius: 7px; outline: none; background: #0c141d; color: #e8eef7; color-scheme: dark; font-size: 12px; } select option { background: #0c141d; color: #e8eef7; } select:focus-visible { border-color: #b8f36b; box-shadow: 0 0 0 2px #b8f36b55; }
 .full { width: 100%; } .primary, .secondary, .download-button, .delete-button { padding: 9px 12px; border-radius: 7px; font-size: 11px; font-weight: 700; }
 .primary { background: #b8f36b; color: #14200e; } .secondary { border: 1px solid #354858; background: #192632; color: #c4d0dc; } .download-button { background: #314b3a; color: #d6ffb3; } .delete-button { background: #5a2e2d; color: #ffd1c7; }
 .toolbar-actions button { display: inline-flex; align-items: center; gap: 7px; } .toolbar-icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }

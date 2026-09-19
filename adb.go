@@ -173,6 +173,14 @@ func (c *ADBClient) Detect(ctx context.Context) (string, error) {
 	return string(out), nil
 }
 
+// StartServer starts the ADB server and performs its normal authentication setup.
+func (c *ADBClient) StartServer(ctx context.Context) error {
+	if _, err := c.runADB(ctx, "start-server"); err != nil {
+		return fmt.Errorf("start adb server: %w", err)
+	}
+	return nil
+}
+
 func (c *ADBClient) ListDevices(ctx context.Context) ([]Device, error) {
 	out, err := c.runADB(ctx, "devices", "-l")
 	if err != nil {

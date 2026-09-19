@@ -3,17 +3,20 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App struct
 type App struct {
-	ctx    context.Context
-	client *ADBClient
+	ctx         context.Context
+	client      *ADBClient
+	startupOnce sync.Once
 }
 
 // NewApp creates a new App application struct
@@ -25,6 +28,11 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.startupOnce.Do(func() {
+		if err := a.client.StartServer(ctx); err != nil {
+			log.Printf("ADB startup bootstrap failed: %v", err)
+		}
+	})
 }
 
 // DetectADB verifies that adb is available and returns its version string.
