@@ -22,8 +22,20 @@ export function ListPackageDirectory(arg1, arg2, arg3) {
   return window['go']['main']['App']['ListPackageDirectory'](arg1, arg2, arg3);
 }
 
+export function ListWifiPairingDevices() {
+  return window['go']['main']['App']['ListWifiPairingDevices']();
+}
+
 export function PackageContext(arg1) {
   return window['go']['main']['App']['PackageContext'](arg1);
+}
+
+export function PairAndConnect(arg1, arg2) {
+  return window['go']['main']['App']['PairAndConnect'](arg1, arg2);
+}
+
+export function PairWithCode(arg1, arg2) {
+  return window['go']['main']['App']['PairWithCode'](arg1, arg2);
 }
 
 export function PreviewFile(arg1, arg2, arg3, arg4) {

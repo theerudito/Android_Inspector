@@ -61,3 +61,26 @@ label { color: #a6b3c1; font-size: 11px; } select { width: 100%; margin-top: 7px
 .sidebar-footer { padding-top: 16px; padding-bottom: 8px; color: #b8c4d0; }
 .entry-list { padding-bottom: 52px; margin-bottom: 18px; }
 .download-panel .download-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; }
+/* Wi-Fi pairing tabs, device list, and pairing-code entry */
+.wifi-dialog { width: 480px; max-height: calc(100vh - 48px); overflow-y: auto; scrollbar-width: none; }
+.wifi-dialog::-webkit-scrollbar { display: none; }
+.wifi-tabs { display: flex; gap: 16px; margin: 12px 0 14px; border-bottom: 1px solid #2a3b4a; }
+.wifi-tab { padding: 8px 2px; margin-bottom: -1px; border-bottom: 2px solid transparent; background: transparent; color: #8494a5; font-size: 12px; font-weight: 700; }
+.wifi-tab:hover { color: #cbd7e1; }
+.wifi-tab.active { border-bottom-color: #b8f36b; color: #b8f36b; }
+.wifi-code-tab { display: flex; flex-direction: column; gap: 10px; }
+.wifi-search { width: 100%; padding: 9px 11px; border: 1px solid #344757; border-radius: 7px; outline: none; background: #0c141d; color: #e8eef7; font-size: 12px; }
+.wifi-search:focus-visible { border-color: #b8f36b; box-shadow: 0 0 0 2px #b8f36b55; }
+.wifi-device-list { overflow: hidden; border: 1px solid #2a3b4a; border-radius: 8px; }
+.wifi-device-head, .wifi-device-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 12px; }
+.wifi-device-head { border-bottom: 1px solid #2a3b4a; color: #78899a; font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.wifi-device-row { border-bottom: 1px solid #1e2d3a; color: #c4d0dc; font-size: 12px; }
+.wifi-device-row:last-child { border-bottom: 0; }
+.wifi-device-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wifi-device-address { overflow: hidden; font-family: ui-monospace, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.wifi-pair-button { padding: 6px 12px; }
+.dialog-nested { z-index: 20; }
+.code-dialog { width: 380px; }
+.code-inputs { display: flex; justify-content: center; gap: 8px; margin: 16px 0 4px; }
+.code-inputs input { width: 42px; height: 50px; border: 1px solid #344757; border-radius: 8px; outline: none; background: #0c141d; color: #e8eef7; font-size: 20px; font-weight: 800; text-align: center; }
+.code-inputs input:focus-visible { border-color: #b8f36b; box-shadow: 0 0 0 2px #b8f36b55; }

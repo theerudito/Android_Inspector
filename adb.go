@@ -69,11 +69,25 @@ type ADBClient struct {
 	runInput commandInputRunner
 	adbPath  string
 	adbErr   error
+	// restart restarts the ADB server with mDNS discovery enabled.
+	// It defaults to restartADBServer and is a seam for tests.
+	restart func(context.Context, bool) error
 }
 
 func NewADBClient() *ADBClient {
 	adbPath, err := resolveADBPath()
-	return &ADBClient{run: runCommand, runInput: runCommandInput, adbPath: adbPath, adbErr: err}
+	c := &ADBClient{run: runCommand, runInput: runCommandInput, adbPath: adbPath, adbErr: err}
+	c.restart = c.restartADBServer
+	return c
+}
+
+// restartADB restarts the ADB server, falling back to restartADBServer when
+// no test seam is installed.
+func (c *ADBClient) restartADB(ctx context.Context, enableMDNS bool) error {
+	if c.restart != nil {
+		return c.restart(ctx, enableMDNS)
+	}
+	return c.restartADBServer(ctx, enableMDNS)
 }
 
 const adbSetupHint = "configure ADB_PATH, set ANDROID_HOME or ANDROID_SDK_ROOT, install Android SDK Platform-Tools in a standard SDK location, or add adb to PATH"
@@ -394,6 +408,12 @@ func parseDevices(output string) []Device {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
 		if len(fields) < 2 || fields[0] == "List" || fields[0] == "*" {
+			continue
+		}
+		// ADB can expose the mDNS service itself as a synthetic serial in
+		// addition to the real host:port serial. The latter is the usable,
+		// stable device identity for this application, so do not show both.
+		if strings.Contains(strings.ToLower(fields[0]), "_adb-tls-connect._tcp") {
 			continue
 		}
 		device := Device{Serial: fields[0], State: fields[1]}

@@ -90,6 +90,24 @@ export namespace main {
 	        this.lineCount = source["lineCount"];
 	    }
 	}
+	export class WifiPairingDevice {
+	    name: string;
+	    address: string;
+	    host: string;
+	    port: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WifiPairingDevice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.address = source["address"];
+	        this.host = source["host"];
+	        this.port = source["port"];
+	    }
+	}
 	export class WifiPairingOffer {
 	    serviceName: string;
 	    password: string;

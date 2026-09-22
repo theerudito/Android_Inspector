@@ -62,3 +62,24 @@ func TestListDevicesDoesNotBootstrapADB(t *testing.T) {
 		t.Fatalf("commands = %#v, want %#v", commands, want)
 	}
 }
+
+func TestListDevicesKeepsEveryWirelessSerial(t *testing.T) {
+	client := &ADBClient{
+		adbPath: "adb",
+		run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			return []byte("List of devices attached\n192.168.1.10:37743\tdevice product:husky model:Pixel_8 device:husky transport_id:1\n192.168.1.11:41235\tdevice product:dm3q model:Galaxy_S24 device:dm3q transport_id:2\n"), nil
+		},
+	}
+
+	devices, err := client.ListDevices(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Device{
+		{Serial: "192.168.1.10:37743", State: "device", Model: "Pixel_8"},
+		{Serial: "192.168.1.11:41235", State: "device", Model: "Galaxy_S24"},
+	}
+	if !reflect.DeepEqual(devices, want) {
+		t.Fatalf("ListDevices() = %#v, want %#v", devices, want)
+	}
+}

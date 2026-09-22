@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ClipboardEvent, KeyboardEvent } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
@@ -8,6 +8,8 @@ import {
   ListDebugPackages,
   ListDevices,
   ListPackageDirectory,
+  ListWifiPairingDevices,
+  PairAndConnect,
   PreviewFile,
   SaveFile,
   StartWifiPairing,
@@ -23,6 +25,7 @@ type DirectoryEntry = main.DirectoryEntry;
 type DebugPackage = main.DebugPackage;
 type FilePreview = main.FilePreview;
 type WifiPairingOffer = main.WifiPairingOffer;
+type WifiPairingDevice = main.WifiPairingDevice;
 type WifiStatus = main.WifiPairingStatus;
 
 function Progress({ label }: { label: string }) {
@@ -144,8 +147,27 @@ function App() {
   const [packagesError, setPackagesError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<DirectoryEntry | null>(null);
   const [wifiOpen, setWifiOpen] = useState(false);
+  const [wifiTab, setWifiTab] = useState<"qr" | "code">("qr");
   const [wifiOffer, setWifiOffer] = useState<WifiPairingOffer | null>(null);
   const [wifiStatus, setWifiStatus] = useState<WifiStatus | null>(null);
+  const [pairDevices, setPairDevices] = useState<WifiPairingDevice[]>([]);
+  const [pairSearch, setPairSearch] = useState("");
+  const [pairError, setPairError] = useState("");
+  const [pairNotice, setPairNotice] = useState("");
+  const [codeTarget, setCodeTarget] = useState<WifiPairingDevice | null>(null);
+  const [codeDigits, setCodeDigits] = useState<string[]>(["", "", "", "", "", ""]);
+  const [codeError, setCodeError] = useState("");
+  const [codeBusy, setCodeBusy] = useState(false);
+  // Pairing-code flow is now pair+connect in one backend call, so the busy
+  // label walks through both phases: "pairing" while `adb pair` runs, then
+  // "connecting" while the backend polls for the _adb-tls-connect._tcp
+  // address. The flip is time-based (the backend exposes no progress
+  // events); pairing usually finishes within a few seconds while connect
+  // polling can take up to ~30s.
+  const [codePhase, setCodePhase] = useState<"pairing" | "connecting">(
+    "pairing",
+  );
+  const codeInputs = useRef<Array<HTMLInputElement | null>>([]);
   const [mediaURL, setMediaURL] = useState("");
   const [pdfError, setPdfError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -186,8 +208,16 @@ function App() {
   async function openWifiPairing() {
     wifiConnected.current = false;
     setWifiOpen(true);
+    setWifiTab("qr");
     setWifiOffer(null);
     setWifiStatus({ state: "waiting", message: "Preparing Wi-Fi pairing…" });
+    setPairDevices([]);
+    setPairSearch("");
+    setPairError("");
+    setPairNotice("");
+    setCodeTarget(null);
+    setCodeError("");
+    setCodePhase("pairing");
     try {
       setWifiOffer(await StartWifiPairing());
     } catch (e) {
@@ -200,6 +230,30 @@ function App() {
     setWifiStatus(null);
     void StopWifiPairing();
   }
+  // Shared success path for QR and pairing-code connections: refresh
+  // the device list, surface a workspace-level notice, then close the modal
+  // (and any nested code dialog). Closing via wifiOpen=false also stops the
+  // 800ms/2s polls through their effect cleanups, so no timer outlives it.
+  // preferredSerial (the just-connected _adb-tls-connect._tcp address) is
+  // selected when the current selection is gone; refreshDevices already
+  // falls back to the first device when nothing is selected, so a fresh
+  // single-device workspace auto-selects the new connection.
+  async function finishPairingSuccess(message: string, preferredSerial?: string) {
+    setCodeTarget(null);
+    setCodeError("");
+    setCodeBusy(false);
+    setCodePhase("pairing");
+    setPairError("");
+    setPairNotice("");
+    const found = await refreshDevices();
+    if (preferredSerial && found.some((d) => d.serial === preferredSerial)) {
+      setSerial((old) =>
+        found.some((d) => d.serial === old) ? old : preferredSerial,
+      );
+    }
+    setNotice(message);
+    closeWifiPairing();
+  }
   useEffect(() => {
     if (!wifiOpen || !wifiOffer) return;
     let cancelled = false;
@@ -210,7 +264,10 @@ function App() {
         setWifiStatus(status);
         if (status.state === "connected" && !wifiConnected.current) {
           wifiConnected.current = true;
-          refreshDevices();
+          const label = status.serial
+            ? `Connected to ${status.serial}.`
+            : "Connected over Wi-Fi.";
+          await finishPairingSuccess(label);
         }
       } catch {
         /* keep the last status while the modal is open */
@@ -223,7 +280,123 @@ function App() {
       window.clearInterval(timer);
     };
   }, [wifiOpen, wifiOffer]);
-  async function refreshDevices() {
+  const filteredPairDevices = useMemo(() => {
+    const query = pairSearch.trim().toLowerCase();
+    if (!query) return pairDevices;
+    return pairDevices.filter((device) =>
+      device.name.toLowerCase().includes(query),
+    );
+  }, [pairDevices, pairSearch]);
+  useEffect(() => {
+    if (!wifiOpen || wifiTab !== "code") return;
+    let cancelled = false;
+    async function poll() {
+      try {
+        const found = await ListWifiPairingDevices();
+        if (cancelled) return;
+        setPairDevices(found);
+        setPairError("");
+      } catch (e) {
+        if (!cancelled) setPairError(String(e));
+      }
+    }
+    poll();
+    const timer = window.setInterval(poll, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [wifiOpen, wifiTab]);
+  function openCodeDialog(device: WifiPairingDevice) {
+    setCodeTarget(device);
+    setCodeDigits(["", "", "", "", "", ""]);
+    setCodeError("");
+  }
+  function closeCodeDialog() {
+    if (codeBusy) return;
+    setCodeTarget(null);
+    setCodeError("");
+  }
+  useEffect(() => {
+    if (!codeTarget) return;
+    const timer = window.setTimeout(() => codeInputs.current[0]?.focus(), 50);
+    return () => window.clearTimeout(timer);
+  }, [codeTarget]);
+  function setDigit(index: number, value: string) {
+    const digit = value.replace(/\D/g, "").slice(-1);
+    setCodeDigits((old) => {
+      const next = [...old];
+      next[index] = digit;
+      return next;
+    });
+    setCodeError("");
+    if (digit && index < 5) {
+      window.setTimeout(() => codeInputs.current[index + 1]?.focus(), 0);
+    }
+  }
+  function handleDigitKeyDown(
+    index: number,
+    event: KeyboardEvent<HTMLInputElement>,
+  ) {
+    if (event.key === "Backspace" && !codeDigits[index] && index > 0) {
+      setCodeDigits((old) => {
+        const next = [...old];
+        next[index - 1] = "";
+        return next;
+      });
+      codeInputs.current[index - 1]?.focus();
+    }
+  }
+  function handleDigitPaste(event: ClipboardEvent<HTMLInputElement>) {
+    const digits = event.clipboardData
+      .getData("text")
+      .replace(/\D/g, "")
+      .slice(0, 6)
+      .split("");
+    if (!digits.length) return;
+    event.preventDefault();
+    setCodeDigits(() => {
+      const next = ["", "", "", "", "", ""];
+      for (let i = 0; i < 6; i++) next[i] = digits[i] ?? "";
+      return next;
+    });
+    setCodeError("");
+    const focusIndex = Math.min(digits.length, 5);
+    window.setTimeout(() => codeInputs.current[focusIndex]?.focus(), 0);
+  }
+  async function submitCode() {
+    if (!codeTarget || codeBusy) return;
+    const code = codeDigits.join("");
+    if (code.length !== 6) {
+      setCodeError("Enter the 6 digit code shown on the device.");
+      return;
+    }
+    setCodeBusy(true);
+    setCodePhase("pairing");
+    setCodeError("");
+    // Pairing typically completes in a few seconds; if we are still waiting
+    // past this point the backend is polling for the connect address.
+    const phaseTimer = window.setTimeout(
+      () => setCodePhase("connecting"),
+      8000,
+    );
+    try {
+      const target = codeTarget.address;
+      const serial = await PairAndConnect(target, code);
+      window.clearTimeout(phaseTimer);
+      await finishPairingSuccess(
+        `Paired with ${target} and connected to ${serial}.`,
+        serial,
+      );
+    } catch (e) {
+      window.clearTimeout(phaseTimer);
+      setCodeError(String(e));
+    } finally {
+      setCodeBusy(false);
+      setCodePhase("pairing");
+    }
+  }
+  async function refreshDevices(): Promise<Device[]> {
     setBusy("devices");
     setError("");
     try {
@@ -232,8 +405,10 @@ function App() {
       setSerial((old) =>
         found.some((d) => d.serial === old) ? old : (found[0]?.serial ?? ""),
       );
+      return found;
     } catch (e) {
       setError(String(e));
+      return [];
     } finally {
       setBusy("");
     }
@@ -696,31 +871,194 @@ function App() {
                   Close
                 </button>
               </div>
-              <p>
-                Pair an Android 11+ device for wireless debugging. On the phone
-                open Developer options &gt; Wireless debugging &gt; Pair using
-                QR code, then scan this code.
-              </p>
-              <div className="wifi-qr-stage">
-                {wifiOffer?.qrImage ? (
-                  <img src={wifiOffer.qrImage} alt="Wi-Fi pairing QR code" />
-                ) : (
-                  <Progress label="Generating QR code" />
-                )}
-              </div>
-              {wifiOffer?.host && <p className="wifi-host">{wifiOffer.host}</p>}
-              {wifiStatus?.message && (
-                <p
-                  className={
-                    wifiStatus.state === "failed"
-                      ? "error-text"
-                      : "notice-text"
-                  }
+              <div className="wifi-tabs" role="tablist" aria-label="Pairing method">
+                <button
+                  role="tab"
+                  aria-selected={wifiTab === "qr"}
+                  className={wifiTab === "qr" ? "wifi-tab active" : "wifi-tab"}
+                  onClick={() => setWifiTab("qr")}
                 >
-                  {wifiStatus.message}
-                </p>
+                  Pair using QR code
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={wifiTab === "code"}
+                  className={wifiTab === "code" ? "wifi-tab active" : "wifi-tab"}
+                  onClick={() => setWifiTab("code")}
+                >
+                  Pair using pairing code
+                </button>
+              </div>
+              {wifiTab === "qr" ? (
+                <>
+                  <p>
+                    Pair an Android 11+ device for wireless debugging. On the
+                    phone open Developer options &gt; Wireless debugging &gt;
+                    Pair using QR code, then scan this code.
+                  </p>
+                  <div className="wifi-qr-stage">
+                    {wifiOffer?.qrImage ? (
+                      <img
+                        src={wifiOffer.qrImage}
+                        alt="Wi-Fi pairing QR code"
+                      />
+                    ) : (
+                      <Progress label="Generating QR code" />
+                    )}
+                  </div>
+                  {wifiOffer?.host && (
+                    <p className="wifi-host">{wifiOffer.host}</p>
+                  )}
+                  {wifiStatus?.message && (
+                    <p
+                      className={
+                        wifiStatus.state === "failed"
+                          ? "error-text"
+                          : "notice-text"
+                      }
+                    >
+                      {wifiStatus.message}
+                    </p>
+                  )}
+                  {wifiStatus?.state === "failed" &&
+                    wifiStatus.message.includes("could not connect") && (
+                      <>
+                        <p className="notice-text">
+                          The phone paired but its connect address never
+                          appeared. Close the pairing screen back to the main
+                          Wireless debugging screen (keep its toggle ON), stay
+                          on the same Wi-Fi, then try pairing again.
+                        </p>
+                        <button
+                          className="secondary full"
+                          onClick={() => void refreshDevices()}
+                          disabled={!!busy}
+                        >
+                          {busy === "devices"
+                            ? "Refreshing..."
+                            : "Refresh devices"}
+                        </button>
+                      </>
+                    )}
+                </>
+              ) : (
+                <div className="wifi-code-tab" role="tabpanel">
+                  <p>
+                    1. Connect the phone and this computer to the same Wi-Fi
+                    network.
+                  </p>
+                  <p>
+                    2. On the phone open Developer options &gt; Wireless
+                    debugging &gt; Pair with pairing code, then tap Pair next
+                    to the device below and enter the 6 digit code.
+                  </p>
+                  <input
+                    className="wifi-search"
+                    type="search"
+                    placeholder="Search for devices by name"
+                    aria-label="Search for devices by name"
+                    value={pairSearch}
+                    onChange={(e) => setPairSearch(e.target.value)}
+                  />
+                  {/* No API-level column: `adb mdns services` output has none. */}
+                  <div className="wifi-device-list">
+                    <div className="wifi-device-head">
+                      <span>Name</span>
+                      <span>IP Address &amp; Port</span>
+                      <span />
+                    </div>
+                    {filteredPairDevices.length === 0 && (
+                      <div className="empty-state">
+                        No pairing devices found. Keep the pairing screen open
+                        on the phone.
+                      </div>
+                    )}
+                    {filteredPairDevices.map((device) => (
+                      <div className="wifi-device-row" key={device.address}>
+                        <span className="wifi-device-name" title={device.name}>
+                          {device.name}
+                        </span>
+                        <span
+                          className="wifi-device-address"
+                          title={device.address}
+                        >
+                          {device.address}
+                        </span>
+                        <button
+                          className="secondary wifi-pair-button"
+                          onClick={() => openCodeDialog(device)}
+                        >
+                          Pair
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  {pairError && <p className="error-text">{pairError}</p>}
+                  {pairNotice && <p className="notice-text">{pairNotice}</p>}
+                </div>
               )}
             </div>
+            {codeTarget && (
+              <div className="dialog-backdrop dialog-nested" role="presentation">
+                <div
+                  className="confirm-dialog code-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="code-title"
+                >
+                  <h2 id="code-title">Enter pairing code</h2>
+                  <p>
+                    Enter the 6 digit code shown on the device at{" "}
+                    {codeTarget.address} to pair.
+                  </p>
+                  <div className="code-inputs">
+                    {codeDigits.map((digit, index) => (
+                      <input
+                        key={index}
+                        ref={(el) => {
+                          codeInputs.current[index] = el;
+                        }}
+                        value={digit}
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={1}
+                        aria-label={`Digit ${index + 1}`}
+                        onChange={(e) => setDigit(index, e.target.value)}
+                        onKeyDown={(e) => handleDigitKeyDown(index, e)}
+                        onPaste={handleDigitPaste}
+                        disabled={codeBusy}
+                      />
+                    ))}
+                  </div>
+                  {codeError && <p className="error-text">{codeError}</p>}
+                  {codeBusy && (
+                    <Progress
+                      label={
+                        codePhase === "connecting"
+                          ? "Connecting…"
+                          : "Pairing…"
+                      }
+                    />
+                  )}
+                  <div className="dialog-actions">
+                    <button
+                      className="secondary"
+                      onClick={closeCodeDialog}
+                      disabled={codeBusy}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="primary"
+                      onClick={submitCode}
+                      disabled={codeBusy || codeDigits.join("").length !== 6}
+                    >
+                      Pair
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
         {deleteTarget && (

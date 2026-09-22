@@ -74,6 +74,8 @@ func TestParseDevices(t *testing.T) {
 	}{
 		{"devices with models", "List of devices attached\nABC123\tdevice product:foo model:Pixel_8 device:husky\n192.168.1.4:5555\tunauthorized\n", []Device{{Serial: "ABC123", State: "device", Model: "Pixel_8"}, {Serial: "192.168.1.4:5555", State: "unauthorized"}}},
 		{"empty list", "List of devices attached\n\n", []Device{}},
+		{"two wireless devices stay distinct", "List of devices attached\n192.168.1.10:37743\tdevice product:husky model:Pixel_8 device:husky transport_id:1\n192.168.1.11:41235\tdevice product:dm3q model:Galaxy_S24 device:dm3q transport_id:2\n", []Device{{Serial: "192.168.1.10:37743", State: "device", Model: "Pixel_8"}, {Serial: "192.168.1.11:41235", State: "device", Model: "Galaxy_S24"}}},
+		{"raw mdns serial is hidden in favor of address", "List of devices attached\nadb-AC4VVB4920006139-e7qVDv._adb-tls-connect._tcp\tdevice product:foo model:Pixel_8 device:husky transport_id:1\n192.168.3.94:38429\tdevice product:foo model:Pixel_8 device:husky transport_id:2\n", []Device{{Serial: "192.168.3.94:38429", State: "device", Model: "Pixel_8"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

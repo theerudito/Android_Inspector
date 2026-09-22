@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -35,8 +36,30 @@ const (
 	wifiPeerInfoSize        = 8192
 	wifiPeerInfoRSAKey      = 0
 	wifiExportedKeySize     = 64
-	wifiConnectTimeout      = 30 * time.Second
-	wifiPairingTimeout      = 5 * time.Minute
+	// wifiPairTimeout bounds only the `adb pair` phase. The connect phase
+	// gets its own, longer budget (wifiConnectTimeout) so a slow pair never
+	// starves discovery of the _adb-tls-connect service.
+	wifiPairTimeout = 30 * time.Second
+	// wifiConnectTimeout bounds polling for the _adb-tls-connect service
+	// after a successful pair. 60s covers phones that take a while to
+	// advertise the connect service after the pairing screen closes.
+	wifiConnectTimeout = 60 * time.Second
+	wifiPairingTimeout = 5 * time.Minute
+	// wifiConnectAttemptTimeout bounds each single `adb mdns services` /
+	// `adb connect` / `adb devices -l` attempt inside the connect poll loop,
+	// so one hung attempt can never burn the whole connect budget (which
+	// previously surfaced as "context deadline exceeded" with no detail).
+	wifiConnectAttemptTimeout = 12 * time.Second
+	// maxMdnsRawInError caps how much raw `adb mdns services` output is
+	// embedded in a connect-timeout error for user bug reports.
+	maxMdnsRawInError = 2000
+)
+
+// Poll intervals are vars (not consts) so tests can shrink them without
+// waiting out real-world mDNS discovery delays.
+var (
+	wifiPairingPollInterval = 800 * time.Millisecond
+	wifiConnectPollInterval = 800 * time.Millisecond
 )
 
 var wifiExportedKeyLabel = "adb-label\x00"
@@ -59,6 +82,30 @@ type mdnsService struct {
 	Name    string
 	Kind    string
 	Address string
+}
+
+// WifiPairingDevice describes a phone advertising Wireless debugging pairing
+// over mDNS. Note: `adb mdns services` output carries no API-level column,
+// so this type intentionally omits it instead of reporting guessed data.
+type WifiPairingDevice struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	Host    string `json:"host"`
+	Port    string `json:"port"`
+}
+
+func wifiPairingDeviceFromService(service mdnsService) WifiPairingDevice {
+	host, port, err := net.SplitHostPort(service.Address)
+	if err != nil {
+		host = connHost(service.Address)
+		port = ""
+	}
+	return WifiPairingDevice{
+		Name:    mdnsInstanceName(service.Name),
+		Address: service.Address,
+		Host:    host,
+		Port:    port,
+	}
 }
 
 type wifiPairingSession struct {
@@ -307,24 +354,90 @@ func ipv4OnInterface(iface net.Interface) (string, bool) {
 
 func parseMdnsServices(output string) []mdnsService {
 	services := make([]mdnsService, 0)
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
+	for _, rawLine := range strings.Split(output, "\n") {
+		if strings.TrimSpace(rawLine) == "" {
+			continue
+		}
+		fields := splitMdnsLine(rawLine)
 		if len(fields) < 2 {
 			continue
 		}
-		name := fields[0]
-		kind := ""
-		switch {
-		case strings.Contains(name, "_adb-tls-connect._tcp"):
-			kind = "connect"
-		case strings.Contains(name, "_adb-tls-pairing._tcp"):
-			kind = "pairing"
-		default:
+		name, kind, address, ok := decodeMdnsFields(fields)
+		if !ok {
 			continue
 		}
-		services = append(services, mdnsService{Name: name, Kind: kind, Address: fields[1]})
+		services = append(services, mdnsService{Name: name, Kind: kind, Address: address})
 	}
 	return services
+}
+
+// splitMdnsLine splits on tabs when present (adb separates instance,
+// service type and address with tabs) so instance names with spaces survive.
+func splitMdnsLine(line string) []string {
+	if strings.Contains(line, "\t") {
+		parts := strings.Split(line, "\t")
+		fields := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if part = strings.TrimSpace(part); part != "" {
+				fields = append(fields, part)
+			}
+		}
+		return fields
+	}
+	return strings.Fields(line)
+}
+
+func mdnsKind(value string) string {
+	switch {
+	case strings.Contains(value, "_adb-tls-pairing"):
+		return "pairing"
+	case strings.Contains(value, "_adb-tls-connect"):
+		return "connect"
+	default:
+		return ""
+	}
+}
+
+// isMdnsAddress reports whether value looks like a dialable address, so the
+// service-type column (e.g. "_adb-tls-pairing._tcp") is never mistaken for one.
+func isMdnsAddress(value string) bool {
+	if value == "" || strings.Contains(value, " ") || strings.Contains(value, "_adb-tls-") {
+		return false
+	}
+	if _, _, err := net.SplitHostPort(value); err == nil {
+		return true
+	}
+	return net.ParseIP(strings.Trim(value, "[]")) != nil
+}
+
+func decodeMdnsFields(fields []string) (name, kind, address string, ok bool) {
+	if len(fields) >= 3 {
+		// Current adb format: instance, service-type, address.
+		instance := strings.TrimSuffix(fields[0], ".")
+		svcType := strings.Join(fields[1:len(fields)-1], " ")
+		address = fields[len(fields)-1]
+		kind = mdnsKind(svcType)
+		if kind == "" {
+			kind = mdnsKind(instance)
+		}
+		if kind == "" || !isMdnsAddress(address) {
+			return "", "", "", false
+		}
+		if mdnsKind(instance) != "" {
+			name = strings.TrimSuffix(instance, ".")
+		} else {
+			name = strings.TrimSuffix(instance+"."+strings.Trim(svcType, "."), ".")
+		}
+		return name, kind, address, true
+	}
+	// Legacy format: full-service-name plus address.
+	if kind = mdnsKind(fields[0]); kind == "" {
+		return "", "", "", false
+	}
+	if address = fields[1]; !isMdnsAddress(address) {
+		return "", "", "", false
+	}
+	return strings.TrimSuffix(fields[0], "."), kind, address, true
 }
 
 func mdnsInstanceName(name string) string {
@@ -335,9 +448,25 @@ func mdnsInstanceName(name string) string {
 	return name
 }
 
+// pairingDedupSuffix strips the " (N)" rename mDNS applies when two hosts
+// claim the same instance name (adb shows e.g. "Pixel-8 (2)"). A renamed
+// instance that still normalizes to our QR service name is the phone that
+// scanned our code, so it must keep matching.
+var pairingDedupSuffix = regexp.MustCompile(`\s\(\d+\)$`)
+
+// normalizePairingInstance folds the two spellings adb may report for one
+// mDNS instance: instance names are case-insensitive (RFC 6762) and adb
+// appends a dedup suffix on collisions.
+func normalizePairingInstance(name string) string {
+	short := mdnsInstanceName(name)
+	short = pairingDedupSuffix.ReplaceAllString(short, "")
+	return strings.ToLower(short)
+}
+
 func findNamedMdnsService(services []mdnsService, kind, instance string) (mdnsService, bool) {
+	want := normalizePairingInstance(instance)
 	for _, service := range services {
-		if service.Kind == kind && mdnsInstanceName(service.Name) == instance {
+		if service.Kind == kind && normalizePairingInstance(service.Name) == want {
 			return service, true
 		}
 	}
@@ -391,11 +520,12 @@ func (c *ADBClient) Connect(ctx context.Context, address string) error {
 }
 
 func (c *ADBClient) Pair(ctx context.Context, address, password string) error {
-	address = strings.TrimSpace(address)
-	password = strings.TrimSpace(password)
-	if address == "" || !serialPattern.MatchString(address) {
-		return fmt.Errorf("a valid host:port is required")
+	normalizedAddress, err := normalizePairingAddress(address)
+	if err != nil {
+		return err
 	}
+	address = normalizedAddress
+	password = strings.TrimSpace(password)
 	if password == "" {
 		return fmt.Errorf("pairing password is required")
 	}
@@ -417,11 +547,32 @@ func (c *ADBClient) Pair(ctx context.Context, address, password string) error {
 }
 
 func (c *ADBClient) MdnsServices(ctx context.Context) ([]mdnsService, error) {
+	services, _, err := c.MdnsServicesRaw(ctx)
+	return services, err
+}
+
+// MdnsServicesRaw is MdnsServices plus the raw `adb mdns services` output,
+// so connect-timeout errors can show the user exactly what the daemon
+// advertised (missing service vs. mismatched host vs. stale daemon).
+func (c *ADBClient) MdnsServicesRaw(ctx context.Context) ([]mdnsService, string, error) {
 	out, err := c.runADB(ctx, "mdns", "services")
 	if err != nil {
-		return nil, fmt.Errorf("list mDNS services: %w", err)
+		return nil, "", fmt.Errorf("list mDNS services: %w", err)
 	}
-	return parseMdnsServices(string(out)), nil
+	return parseMdnsServices(string(out)), string(out), nil
+}
+
+// MdnsCheck reports whether the ADB mDNS daemon itself is answering.
+func (c *ADBClient) MdnsCheck(ctx context.Context) error {
+	out, err := c.runADB(ctx, "mdns", "check")
+	if err != nil {
+		return fmt.Errorf("mDNS discovery is unavailable: %w", err)
+	}
+	lower := strings.ToLower(strings.TrimSpace(string(out)))
+	if strings.Contains(lower, "not available") || strings.Contains(lower, "failed") || strings.Contains(lower, "error") {
+		return fmt.Errorf("mDNS discovery is unavailable: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func runPairingHandshake(conn net.Conn, password []byte, certificate tls.Certificate, peerInfo []byte) error {
@@ -531,7 +682,7 @@ func (a *App) StartWifiPairing() (WifiPairingOffer, error) {
 		return WifiPairingOffer{}, err
 	}
 	if _, err := a.client.MdnsServices(a.ctx); err != nil {
-		if err := a.client.restartADBServer(a.ctx, true); err != nil {
+		if err := a.client.restartADB(a.ctx, true); err != nil {
 			return WifiPairingOffer{}, fmt.Errorf("enable ADB mDNS discovery: %w", err)
 		}
 	}
@@ -579,6 +730,187 @@ func (a *App) WifiPairingStatus() WifiPairingStatus {
 	return session.snapshot()
 }
 
+// ListWifiPairingDevices returns phones currently advertising pairing mode
+// over mDNS (Developer options > Wireless debugging > Pair with pairing code).
+func (a *App) ListWifiPairingDevices() ([]WifiPairingDevice, error) {
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	services, err := a.client.MdnsServices(ctx)
+	if err != nil {
+		// Same recovery as StartWifiPairing: a stale server may have mDNS disabled.
+		if restartErr := a.client.restartADB(ctx, true); restartErr != nil {
+			return nil, fmt.Errorf("enable ADB mDNS discovery: %w", restartErr)
+		}
+		services, err = a.client.MdnsServices(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	devices := pairingDevices(services)
+	if len(devices) == 0 {
+		// A stale server started without mDNS advertises nothing at all.
+		// Restart with discovery enabled only when the daemon itself is
+		// broken; otherwise an empty list simply means the phone is not on
+		// the pairing screen. Restarting on every empty poll would drop
+		// existing connections on each frontend refresh.
+		if chkErr := a.client.MdnsCheck(ctx); chkErr != nil {
+			if restartErr := a.client.restartADB(ctx, true); restartErr != nil {
+				return nil, fmt.Errorf("enable ADB mDNS discovery: %w", restartErr)
+			}
+			services, err = a.client.MdnsServices(ctx)
+			if err != nil {
+				return nil, err
+			}
+			devices = pairingDevices(services)
+		}
+	}
+	return devices, nil
+}
+
+func pairingDevices(services []mdnsService) []WifiPairingDevice {
+	devices := make([]WifiPairingDevice, 0)
+	for _, service := range services {
+		if service.Kind != "pairing" {
+			continue
+		}
+		devices = append(devices, wifiPairingDeviceFromService(service))
+	}
+	return devices
+}
+
+// PairWithCode pairs with a device using the 6-digit code shown on the phone
+// and then auto-connects to it. It is a backward-compatible wrapper around
+// PairAndConnect: the signature stays `(string, string) error` so existing
+// Wails bindings and callers keep compiling, while the behavior is now
+// pair+connect instead of pair-only.
+func (a *App) PairWithCode(address, code string) error {
+	_, err := a.PairAndConnect(address, code)
+	return err
+}
+
+// PairAndConnect pairs with a device using the 6-digit code shown on the
+// phone, then connects to it, returning the connected device serial
+// (the `_adb-tls-connect._tcp` address, e.g. 192.168.1.9:37591).
+//
+// Why auto-connect is required: `adb pair <pairing-ip:pairing-port> <code>`
+// only exchanges keys with the phone's pairing service
+// (`_adb-tls-pairing._tcp`, an ephemeral port that changes every time the
+// "Pair with pairing code" screen is opened). Pairing alone never creates an
+// ADB device connection, so without a follow-up
+// `adb connect <connect-ip:connect-port>` (`_adb-tls-connect._tcp`, a
+// different port) the device list stays empty and the phone shows no
+// connect/auth prompt. The QR flow already did this via
+// connectPairedDevice; the pairing-code flow did not, which is why a
+// successful pair still left the CONNECTION dropdown on
+// "Select a device / No device selected".
+//
+// The connect address is discovered the same way as the QR flow: poll
+// `adb mdns services` for a Kind=="connect" entry. The pairing address host is
+// only a preference because Android can advertise the same phone from a
+// different local address after pairing.
+//
+// A note on what the phone shows after a successful pair: the Device details
+// entry on the phone (e.g. Usuario@JORGE-DEV plus a fingerprint like
+// 6A:F9:...) is expected and correct. The name comes from this PC's ADB host
+// key comment (the trailing `user@host` field in ~/.android/adbkey.pub) and
+// the fingerprint is the phone's view of that key. Neither indicates a
+// failure; the missing piece was only the `adb connect` step, added here.
+//
+// Errors are split so the UI can tell the phases apart: a pair failure is
+// returned as-is (connect is never attempted), while a connect failure after
+// a successful pair is wrapped as "paired with <addr> but ADB could not
+// connect: ...".
+func (a *App) PairAndConnect(address, code string) (string, error) {
+	normalizedAddress, err := normalizePairingAddress(address)
+	if err != nil {
+		return "", err
+	}
+	normalizedCode, err := normalizePairingCode(code)
+	if err != nil {
+		return "", err
+	}
+	base := a.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	pairCtx, cancelPair := context.WithTimeout(base, wifiPairTimeout)
+	pairErr := a.client.Pair(pairCtx, normalizedAddress, normalizedCode)
+	cancelPair()
+	if pairErr != nil {
+		return "", pairErr
+	}
+	connectCtx, cancelConnect := context.WithTimeout(base, wifiConnectTimeout)
+	defer cancelConnect()
+	serial, err := a.connectPairedDevice(connectCtx, connHost(normalizedAddress))
+	if err != nil {
+		return "", fmt.Errorf("paired with %s but ADB could not connect: %w. Keep Wireless debugging on and retry", normalizedAddress, err)
+	}
+	return serial, nil
+}
+
+func isPairingCode(code string) bool {
+	if len(code) != 6 {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizePairingCode strips whitespace and common separators so a typed or
+// pasted code ("482 910", "482-910", trailing newline) matches the 6-digit
+// code the list-row digit inputs already produce.
+func normalizePairingCode(code string) (string, error) {
+	var digits strings.Builder
+	for _, r := range code {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	normalized := digits.String()
+	if !isPairingCode(normalized) {
+		return "", fmt.Errorf("invalid pairing code: enter the 6 digits shown on the phone pairing screen")
+	}
+	return normalized, nil
+}
+
+// normalizePairingAddress trims surrounding/inner whitespace, lowercases the
+// host, and validates a dialable host:port (IPv4, bracketed IPv6, or DNS
+// name). Discovered mDNS addresses already have this shape, so the transform
+// is idempotent and the list flow is unaffected.
+func normalizePairingAddress(address string) (string, error) {
+	compact := strings.Join(strings.Fields(address), "")
+	if compact == "" {
+		return "", fmt.Errorf("invalid pairing address: enter the IP and port shown on the phone (e.g. 192.168.1.101:37743)")
+	}
+	host, port, err := net.SplitHostPort(compact)
+	if err != nil {
+		return "", fmt.Errorf("invalid pairing address %q: use IP:port like 192.168.1.101:37743", strings.TrimSpace(address))
+	}
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	if host == "" {
+		return "", fmt.Errorf("invalid pairing address %q: host is empty, use IP:port like 192.168.1.101:37743", strings.TrimSpace(address))
+	}
+	if net.ParseIP(host) == nil && !pairingHostPattern.MatchString(host) {
+		return "", fmt.Errorf("invalid pairing address %q: host %q is not a valid IP or hostname", strings.TrimSpace(address), host)
+	}
+	portNum, err := net.LookupPort("tcp", port)
+	if err != nil || portNum < 1 || portNum > 65535 {
+		return "", fmt.Errorf("invalid pairing address %q: port must be 1-65535", strings.TrimSpace(address))
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]:" + port, nil
+	}
+	return host + ":" + port, nil
+}
+
+var pairingHostPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`)
+
 // StopWifiPairing cancels the active Wi-Fi pairing session, if any.
 func (a *App) StopWifiPairing() {
 	a.pairingMu.Lock()
@@ -591,45 +923,59 @@ func (a *App) StopWifiPairing() {
 }
 
 func (a *App) runWifiPairing(ctx context.Context, session *wifiPairingSession, serviceName, password string) {
-	var lastErr error
 	for {
-		if ctx.Err() != nil {
-			if lastErr != nil {
-				session.setStatus("failed", "Waiting for the phone timed out. Keep Wireless debugging on and scan again.", "")
-				return
-			}
-			session.setStatus("stopped", "Wi-Fi pairing closed.", "")
+		select {
+		case <-ctx.Done():
+			finishWifiPairing(ctx, session)
 			return
+		default:
 		}
 		services, err := a.client.MdnsServices(ctx)
-		if err != nil {
-			lastErr = err
-		} else if service, ok := findNamedMdnsService(services, "pairing", serviceName); ok {
-			session.setStatus("pairing", "Phone found. Completing secure pairing…", "")
-			if err := a.client.Pair(ctx, service.Address, password); err != nil {
-				lastErr = err
-			} else {
-				session.setStatus("connecting", "Paired. Connecting over Wi-Fi…", "")
-				serial, err := a.connectPairedDevice(ctx, connHost(service.Address))
-				if err != nil {
-					session.setStatus("failed", "Paired, but ADB could not connect yet. Keep Wireless debugging on and refresh devices.", "")
+		if err == nil {
+			if service, ok := findNamedMdnsService(services, "pairing", serviceName); ok {
+				session.setStatus("pairing", "Phone found. Completing secure pairing…", "")
+				if err := a.client.Pair(ctx, service.Address, password); err != nil {
+					session.setStatus("pairing", "Phone found. Pairing failed: "+shortPairingError(err)+". Retrying…", "")
+				} else {
+					session.setStatus("connecting", "Paired. Connecting over Wi-Fi…", "")
+					serial, err := a.connectPairedDevice(ctx, connHost(service.Address), service.Name)
+					if err != nil {
+						session.setStatus("failed", "Paired, but ADB could not connect: "+shortPairingError(err)+" Keep Wireless debugging on and try again.", "")
+						return
+					}
+					session.setStatus("connected", "Connected over Wi-Fi.", serial)
 					return
 				}
-				session.setStatus("connected", "Connected over Wi-Fi.", serial)
-				return
 			}
 		}
 		select {
 		case <-ctx.Done():
-			if lastErr != nil {
-				session.setStatus("failed", "Waiting for the phone timed out. Keep Wireless debugging on and scan again.", "")
-				return
-			}
-			session.setStatus("stopped", "Wi-Fi pairing closed.", "")
+			finishWifiPairing(ctx, session)
 			return
-		case <-time.After(800 * time.Millisecond):
+		case <-time.After(wifiPairingPollInterval):
 		}
 	}
+}
+
+// finishWifiPairing reports why the QR loop ended: a fired deadline means the
+// phone never completed the scan, anything else is an explicit stop.
+func finishWifiPairing(ctx context.Context, session *wifiPairingSession) {
+	if ctx.Err() == context.DeadlineExceeded {
+		session.setStatus("failed", "Waiting for the phone timed out. Keep Wireless debugging on and scan again.", "")
+		return
+	}
+	session.setStatus("stopped", "Wi-Fi pairing closed.", "")
+}
+
+// shortPairingError keeps raw adb failure text out of the status line.
+func shortPairingError(err error) string {
+	msg := strings.TrimSpace(err.Error())
+	msg = strings.TrimPrefix(msg, "pair ")
+	const maxLen = 120
+	if len(msg) > maxLen {
+		return msg[:maxLen] + "…"
+	}
+	return msg
 }
 
 func connHost(address string) string {
@@ -643,36 +989,130 @@ func connHost(address string) string {
 	return host
 }
 
-func (a *App) connectPairedDevice(ctx context.Context, remoteIP string) (string, error) {
+// normalizeConnectHost folds the spellings one mDNS host may appear under:
+// case differences, a trailing dot, surrounding brackets (IPv6), and an
+// IPv6 zone suffix. Without this, "192.168.3.195" never equals
+// "[192.168.3.195]" or "PIXEL-8.local." and the connect poll skips the
+// phone it just paired with.
+func normalizeConnectHost(host string) string {
+	host = strings.TrimSpace(host)
+	host = strings.TrimSuffix(host, ".")
+	host = strings.Trim(host, "[]")
+	if i := strings.LastIndex(host, "%"); i >= 0 {
+		if parsed := net.ParseIP(host[:i]); parsed != nil {
+			host = host[:i]
+		}
+	}
+	return strings.ToLower(host)
+}
+
+func connectHostMatches(serviceHost, remoteIP string) bool {
+	if remoteIP == "" {
+		return true
+	}
+	return normalizeConnectHost(serviceHost) == normalizeConnectHost(remoteIP)
+}
+
+func selectConnectService(services []mdnsService, remoteIP, identity string) (mdnsService, error) {
+	candidates := make([]mdnsService, 0)
+	for _, service := range services {
+		if service.Kind == "connect" {
+			candidates = append(candidates, service)
+		}
+	}
+	if len(candidates) == 0 {
+		return mdnsService{}, nil
+	}
+	for _, service := range candidates {
+		if connectHostMatches(connHost(service.Address), remoteIP) {
+			return service, nil
+		}
+	}
+	if identity != "" {
+		matches := make([]mdnsService, 0, 1)
+		for _, service := range candidates {
+			if normalizePairingInstance(service.Name) == normalizePairingInstance(identity) {
+				matches = append(matches, service)
+			}
+		}
+		if len(matches) == 1 {
+			return matches[0], nil
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	addresses := make([]string, 0, len(candidates))
+	for _, service := range candidates {
+		addresses = append(addresses, service.Address)
+	}
+	return mdnsService{}, fmt.Errorf("multiple _adb-tls-connect services found with no matching host: %s", strings.Join(addresses, ", "))
+}
+
+func truncateMdnsRaw(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if len(raw) > maxMdnsRawInError {
+		return raw[:maxMdnsRawInError] + "\n…(truncated)"
+	}
+	if raw == "" {
+		return "(empty)"
+	}
+	return raw
+}
+
+func (a *App) connectPairedDevice(ctx context.Context, remoteIP string, identities ...string) (string, error) {
 	deadline := time.Now().Add(wifiConnectTimeout)
+	identity := ""
+	if len(identities) > 0 {
+		identity = identities[0]
+	}
 	var lastErr error
+	var lastRaw string
+	var seenConnect []string
+	seenSet := make(map[string]bool)
+pollLoop:
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
-			return "", ctx.Err()
+			break
 		}
-		services, err := a.client.MdnsServices(ctx)
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, wifiConnectAttemptTimeout)
+		services, raw, err := a.client.MdnsServicesRaw(attemptCtx)
+		cancelAttempt()
 		if err != nil {
 			lastErr = err
 		} else {
+			lastRaw = string(raw)
 			for _, service := range services {
 				if service.Kind != "connect" {
 					continue
 				}
-				host := connHost(service.Address)
-				if remoteIP != "" && host != remoteIP {
-					continue
+				if !seenSet[service.Address] {
+					seenSet[service.Address] = true
+					seenConnect = append(seenConnect, service.Address)
 				}
-				if err := a.client.Connect(ctx, service.Address); err != nil {
-					lastErr = err
+			}
+			service, selectErr := selectConnectService(services, remoteIP, identity)
+			if selectErr != nil {
+				return "", selectErr
+			}
+			if service.Address != "" {
+				attemptCtx, cancelConnect := context.WithTimeout(ctx, wifiConnectAttemptTimeout)
+				connectErr := a.client.Connect(attemptCtx, service.Address)
+				cancelConnect()
+				if connectErr != nil {
+					lastErr = connectErr
 					continue
 				}
 				return service.Address, nil
 			}
 		}
-		devices, err := a.client.ListDevices(ctx)
+		attemptCtx, cancelDevices := context.WithTimeout(ctx, wifiConnectAttemptTimeout)
+		devices, err := a.client.ListDevices(attemptCtx)
+		cancelDevices()
 		if err == nil {
 			for _, device := range devices {
-				if strings.Contains(device.Serial, remoteIP) && device.State == "device" {
+				if device.State == "device" &&
+					(remoteIP == "" || strings.Contains(normalizeConnectHost(device.Serial), normalizeConnectHost(remoteIP))) {
 					return device.Serial, nil
 				}
 			}
@@ -681,12 +1121,25 @@ func (a *App) connectPairedDevice(ctx context.Context, remoteIP string) (string,
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(800 * time.Millisecond):
+			break pollLoop
+		case <-time.After(wifiConnectPollInterval):
+		}
+		if ctx.Err() != nil {
+			break pollLoop
 		}
 	}
-	if lastErr != nil {
-		return "", lastErr
+	if lastErr == nil && ctx.Err() != nil {
+		lastErr = ctx.Err()
 	}
-	return "", fmt.Errorf("paired device did not become visible over Wi-Fi")
+	detail := fmt.Sprintf("no _adb-tls-connect service for host %q became visible; mdns services output:\n%s",
+		remoteIP, truncateMdnsRaw(lastRaw))
+	if len(seenConnect) > 0 {
+		detail += fmt.Sprintf("\nconnect addresses seen during polling: %s", strings.Join(seenConnect, ", "))
+	} else {
+		detail += "\nno _adb-tls-connect address was advertised at all — close the pairing-code screen back to the main Wireless debugging screen (keep its toggle ON), stay on the same Wi-Fi, and check the PC firewall for ADB/mDNS."
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("%s (last error: %v)", detail, lastErr)
+	}
+	return "", fmt.Errorf("%s", detail)
 }

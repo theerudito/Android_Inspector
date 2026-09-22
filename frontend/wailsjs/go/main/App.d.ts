@@ -12,7 +12,13 @@ export function ListDevices():Promise<Array<main.Device>>;
 
 export function ListPackageDirectory(arg1:string,arg2:string,arg3:string):Promise<Array<main.DirectoryEntry>>;
 
+export function ListWifiPairingDevices():Promise<Array<main.WifiPairingDevice>>;
+
 export function PackageContext(arg1:string):Promise<string>;
+
+export function PairAndConnect(arg1:string,arg2:string):Promise<string>;
+
+export function PairWithCode(arg1:string,arg2:string):Promise<void>;
 
 export function PreviewFile(arg1:string,arg2:string,arg3:string,arg4:number):Promise<main.FilePreview>;
 
